@@ -358,9 +358,47 @@ function computerQuote(game, persona, action, shift, facingRaise) {
   return { text, kind, id: `${game.handNumber}-${step}` };
 }
 
+/* 出陣 for the computer lords: immediate pot odds against random hands made them throw away good
+   starting hands, so before the board they play a personal share of the 169 starting hands instead.
+   A raise narrows that share by its size, and more for deeper readers (unless the raiser raises by habit). */
+const PREFLOP_RANGES = { 'liu-bei': 0.65, 'sun-quan': 0.55, 'yuan-shao': 0.75 };
+
+function decidePreflop(game, view, persona, random) {
+  const legal = view.legal, seat = game.actor;
+  const blinds = blindLevel(game.handNumber);
+  const top = startingHandTop(game.seats[seat].hole);
+  const range = PREFLOP_RANGES[view.id] ?? 0.5;
+  const actions = (game.history ?? []).filter(entry => entry.street === 'preflop');
+  const raises = actions.filter(entry => entry.type === 'raise' && entry.seat !== seat);
+  const callers = actions.filter(entry => entry.type === 'call').length;
+  const last = raises.at(-1);
+  const raiseTo = to => {
+    const total = Math.min(legal.maxRaiseTo, Math.max(legal.minRaiseTo, to));
+    return total === legal.maxRaiseTo ? { type: 'all-in' } : { type: 'raise', to: total };
+  };
+  let action, readFold = false;
+  if (!last) {
+    if (legal.canRaise && top <= range * 0.3 && random() < persona.aggression + 0.2) action = raiseTo(blinds.big * (3 + callers));
+    else if (legal.canCheck) action = { type: 'check' };
+    else action = { type: top <= range + (legal.callAmount <= blinds.small ? 0.15 : 0) ? 'call' : 'fold' };
+  } else {
+    const size = raises.length >= 2 || last.to > blinds.big * 6 ? 0.2 : last.to > blinds.big * 3 ? 0.4 : 0.6;
+    const read = persona.read * readTrust(game, last.seat);
+    const keep = range * (1 - (0.5 + 0.5 * read) * (1 - size));
+    if (legal.canRaise && top <= keep * 0.25 && random() < persona.aggression) action = raiseTo(last.to * 3);
+    else if (top <= keep) action = { type: legal.canCheck ? 'check' : 'call' };
+    else {
+      action = { type: legal.canCheck ? 'check' : 'fold' };
+      readFold = top <= range * (1 - 0.5 * (1 - size));
+    }
+  }
+  return { action, quote: computerQuote(game, persona, action, readFold ? -0.1 : 0, Boolean(last)), equity: null, plain: null };
+}
+
 function decideComputer(game, random = Math.random) {
   const view = ve(game), legal = view.legal;
   const persona = COMPUTER_PERSONAS[view.id] ?? COMPUTER_DEFAULT;
+  if (game.street === 'preflop') return decidePreflop(game, view, persona, random);
   // The same random draws for both estimates, so the difference reflects the read rather than sampling noise.
   const seed = Math.floor(random() * 4294967296);
   const plain = readEquity(game, game.actor, 0, seededRandom(seed));
